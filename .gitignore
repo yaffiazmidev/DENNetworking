@@ -1,0 +1,15 @@
+.DS_Store
+.build/
+.swiftpm/
+Packages/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+.idea/
+.vscode/
+Package.resolved
+*.swp
+*~
