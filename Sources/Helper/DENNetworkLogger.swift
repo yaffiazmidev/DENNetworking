@@ -1,29 +1,42 @@
 import Foundation
 
-/// Debug-only network request/response logger.
+/// Network request/response logger.
 ///
-/// All output is gated behind `#if DEBUG` and `isEnabled`. Configure in SceneDelegate:
+/// Logging is controlled by `isEnabled` (default: `false`). Enable it at app launch:
 /// ```swift
+/// #if DEBUG
 /// DENNetworkLogger.isEnabled = true
-/// DENNetworkLogger.maxResponseLines = nil     // full JSON output
-/// DENNetworkLogger.maxRawResponseLength = nil  // full raw output
+/// #endif
 /// ```
-public final class DENNetworkLogger {
+///
+/// - Important: Configure these properties once at app startup before any network calls.
+///   The `#if DEBUG` gate should be in **your app code**, not in the library, to ensure
+///   the compiler flag is evaluated in your module's build context.
+public final class DENNetworkLogger: Sendable {
 
-    /// Master switch. Set `false` to silence all network logging. Default: `true`.
-    public static var isEnabled: Bool = true
+    /// Master switch. Default: `false` — opt-in to prevent logging in production.
+    ///
+    /// Enable in your app's entry point:
+    /// ```swift
+    /// #if DEBUG
+    /// DENNetworkLogger.isEnabled = true
+    /// #endif
+    /// ```
+    nonisolated(unsafe) public static var isEnabled: Bool = false
 
     /// Maximum lines for JSON response output. `nil` = no truncation.
-    public static var maxResponseLines: Int? = 50
+    nonisolated(unsafe) public static var maxResponseLines: Int? = 50
 
     /// Maximum characters for non-JSON (raw) response output. `nil` = no truncation.
-    public static var maxRawResponseLength: Int? = 500
+    nonisolated(unsafe) public static var maxRawResponseLength: Int? = 500
 
     public static func log(request: URLRequest) {
+        guard isEnabled else { return }
+
         let baseURL = request.url?.host ?? "N/A"
-        debugPrint("----------------------- \u{1F680} \(baseURL) ----------------------------")
-        debugPrint("METHOD:  \(request.httpMethod ?? "N/A")")
-        debugPrint("PATH:    \(request.url?.path ?? "N/A")")
+        print("----------------------- 🚀 \(baseURL) ----------------------------")
+        print("METHOD:  \(request.httpMethod ?? "N/A")")
+        print("PATH:    \(request.url?.path ?? "N/A")")
 
         if let url = request.url,
            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -31,32 +44,34 @@ public final class DENNetworkLogger {
             let queryDict = queryItems.reduce(into: [String: String]()) { result, item in
                 result[item.name] = item.value ?? ""
             }
-            debugPrint("QUERY:\n\(prettyPrint(dictionary: queryDict))")
+            print("QUERY:\n\(prettyPrint(dictionary: queryDict))")
         }
 
         if let headers = request.allHTTPHeaderFields, !headers.isEmpty {
-            debugPrint("HEADERS:\n\(prettyPrint(dictionary: headers))")
+            print("HEADERS:\n\(prettyPrint(dictionary: headers))")
         }
 
         if let body = request.httpBody {
             if let prettyBody = prettyPrint(data: body) {
-                debugPrint("BODY:\n \(prettyBody)")
+                print("BODY:\n \(prettyBody)")
             } else {
-                debugPrint("\nBODY (RAW):\n\(String(data: body, encoding: .utf8) ?? "Non-UTF8 data")")
+                print("\nBODY (RAW):\n\(String(data: body, encoding: .utf8) ?? "Non-UTF8 data")")
             }
         }
     }
 
     public static func log(responseData data: Data, response: HTTPURLResponse) {
+        guard isEnabled else { return }
+
         let icon: String
         switch response.statusCode {
-        case 200..<300: icon = "\u{2705} SUCCESS"
-        case 400..<500: icon = "\u{26A0}\u{FE0F} CLIENT ERROR"
-        default: icon = "\u{274C} SERVER ERROR"
+        case 200..<300: icon = "✅ SUCCESS"
+        case 400..<500: icon = "⚠️ CLIENT ERROR"
+        default: icon = "❌ SERVER ERROR"
         }
 
-        debugPrint("\n------------------ \(icon) \u{2022} \(response.statusCode) ------------------")
-        defer { debugPrint("------------------------------------------------\n") }
+        print("\n------------------ \(icon) • \(response.statusCode) ------------------")
+        defer { print("------------------------------------------------\n") }
 
         let urlString = response.url?.absoluteString ?? "N/A"
 
@@ -65,9 +80,9 @@ public final class DENNetworkLogger {
         """
 
         if data.isEmpty {
-            output += "\n\u{1F4E5} RESPONSE \u{2022} [Empty]"
+            output += "\n📥 RESPONSE • [Empty]"
         } else if let prettyResponse = prettyPrint(data: data) {
-            output += "\n\u{1F4E5} RESPONSE \u{2022} \(formatBytes(data.count))\n"
+            output += "\n📥 RESPONSE • \(formatBytes(data.count))\n"
 
             let lines = prettyResponse.split(separator: "\n", omittingEmptySubsequences: false)
             let limit = maxResponseLines ?? lines.count
@@ -88,25 +103,23 @@ public final class DENNetworkLogger {
             } else {
                 truncatedRaw = rawString
             }
-            output += "\n\u{1F4E5} RESPONSE \u{2022} (RAW):\n\(truncatedRaw)"
+            output += "\n📥 RESPONSE • (RAW):\n\(truncatedRaw)"
         }
 
-        debugPrint(output)
+        print(output)
     }
 
     public static func log(error: Error) {
-        debugPrint("\(error)")
+        guard isEnabled else { return }
+        print("\(error)")
     }
 }
 
 extension DENNetworkLogger {
-    // MARK: - Internal
 
     static func debugPrint(_ string: String) {
-        #if DEBUG
         guard isEnabled else { return }
         print(string)
-        #endif
     }
 
     // MARK: - Private Helpers

@@ -14,7 +14,6 @@ public final class DENNetworkURLSessionHTTPClient: DENNetworkHTTPClient, @unchec
         self.session = session
     }
 
-    @discardableResult
     public func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         try Task.checkCancellation()
         DENNetworkLogger.log(request: request)
@@ -31,6 +30,8 @@ public final class DENNetworkURLSessionHTTPClient: DENNetworkHTTPClient, @unchec
             return (data, httpResponse)
         } catch let error as DENNetworkError {
             throw error
+        } catch is CancellationError {
+            throw DENNetworkError.cancelled
         } catch {
             throw resolve(error: error)
         }

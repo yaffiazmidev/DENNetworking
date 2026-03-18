@@ -20,14 +20,14 @@ import Foundation
 ///     .url("https://api.example.com/v1/users")
 ///     .method(.POST)
 ///     .headers(key: "Content-Type", value: "application/json")
-///     .body(data: userPayload)
+///     .body(userPayload)
 ///     .build()
 /// ```
 public extension URLRequest {
 
-    struct Builder {
+    struct Builder: Sendable {
 
-        public enum HTTPMethod: String {
+        public enum HTTPMethod: String, Sendable {
             case GET
             case POST
             case PUT
@@ -39,15 +39,14 @@ public extension URLRequest {
         private var method: HTTPMethod = .GET
         private var headers: [String: String] = [:]
         private var body: Data?
+        private var timeoutInterval: TimeInterval?
 
         private init() {}
 
         /// Start builder from a full `URL` object.
         static func url(_ url: URL) -> Builder {
             var builder = Builder()
-            builder.components.scheme = url.scheme
-            builder.components.host = url.host
-            builder.components.path = url.path
+            builder.components = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents()
             return builder
         }
 
@@ -76,10 +75,20 @@ public extension URLRequest {
             return builder
         }
 
-        /// Appends a path segment to the existing path.
+        /// Appends a path segment to the existing path, automatically handling slashes.
         public func path(_ path: String) -> Builder {
             var builder = self
-            builder.components.path += path
+            let current = builder.components.path
+            let needsSlash = !current.hasSuffix("/") && !path.hasPrefix("/")
+            let doubleSlash = current.hasSuffix("/") && path.hasPrefix("/")
+
+            if doubleSlash {
+                builder.components.path += String(path.dropFirst())
+            } else if needsSlash && !current.isEmpty {
+                builder.components.path += "/" + path
+            } else {
+                builder.components.path += path
+            }
             return builder
         }
 
@@ -89,13 +98,39 @@ public extension URLRequest {
             return builder
         }
 
+        /// Sets multiple headers at once.
+        ///
+        /// ```swift
+        /// .headers([
+        ///     "Content-Type": "application/json",
+        ///     "Accept": "application/json"
+        /// ])
+        /// ```
+        public func headers(_ headers: [String: String]) -> Builder {
+            var builder = self
+            builder.headers.merge(headers) { _, new in new }
+            return builder
+        }
+
+        /// Sets the request timeout interval in seconds.
+        public func timeout(_ interval: TimeInterval) -> Builder {
+            var builder = self
+            builder.timeoutInterval = interval
+            return builder
+        }
+
         /// JSON-encodes an `Encodable` value as the request body.
+        ///
+        /// Automatically sets `Content-Type: application/json` if not already set.
         ///
         /// - Parameter encoder: Custom `JSONEncoder` for date/key strategies. Default: `JSONEncoder()`.
         /// - Throws: Encoding errors (not silenced).
-        public func body(data: Encodable, encoder: JSONEncoder = JSONEncoder()) throws -> Builder {
+        public func body(_ value: Encodable, encoder: JSONEncoder = JSONEncoder()) throws -> Builder {
             var builder = self
-            builder.body = try encoder.encode(data)
+            builder.body = try encoder.encode(value)
+            if builder.headers["Content-Type"] == nil {
+                builder.headers["Content-Type"] = "application/json"
+            }
             return builder
         }
 
@@ -106,6 +141,27 @@ public extension URLRequest {
             return builder
         }
 
+        /// Sets a multipart form data body and the appropriate `Content-Type` header.
+        ///
+        /// ```swift
+        /// var multipart = MultipartFormData()
+        /// multipart.addField(name: "title", value: "My Photo")
+        /// multipart.addFile(name: "image", filename: "photo.jpg",
+        ///                   mimeType: MultipartFormData.MIMEType.jpeg, data: imageData)
+        ///
+        /// let request = try URLRequest
+        ///     .url("https://api.example.com/upload")
+        ///     .method(.POST)
+        ///     .multipart(multipart)
+        ///     .build()
+        /// ```
+        public func multipart(_ formData: MultipartFormData) -> Builder {
+            var builder = self
+            builder.body = formData.encode()
+            builder.headers["Content-Type"] = formData.contentType
+            return builder
+        }
+
         public func queries(_ queries: [URLQueryItem]) -> Builder {
             var builder = self
             builder.components.queryItems = queries
@@ -113,14 +169,17 @@ public extension URLRequest {
         }
 
         /// Converts an `Encodable` value to query parameters via JSON serialization.
-        public func queriesEncodable(_ queries: Encodable?) -> Builder {
+        ///
+        /// - Throws: `DENNetworkError.urlGeneration` if the value cannot be encoded to a dictionary.
+        public func queriesEncodable(_ queries: Encodable?) throws -> Builder {
             var builder = self
 
-            guard let queryParameters = queries?.toDictionary() else {
+            guard let queries else {
                 builder.components.queryItems = nil
                 return builder
             }
 
+            let queryParameters = try queries.toQueryDictionary()
             let urlQueryItems = queryParameters.compactMap({ URLQueryItem(name: $0.key, value: "\($0.value)") })
             builder.components.queryItems = !urlQueryItems.isEmpty ? urlQueryItems : nil
             return builder
@@ -137,6 +196,9 @@ public extension URLRequest {
             request.httpMethod = method.rawValue
             request.allHTTPHeaderFields = headers
             request.httpBody = body
+            if let timeoutInterval {
+                request.timeoutInterval = timeoutInterval
+            }
             return request
         }
     }
@@ -148,18 +210,22 @@ public extension URLRequest {
 
     /// Start builder from a full URL string.
     static func url(_ urlString: String) -> Builder {
-        return Builder.url(urlString)
+        Builder.url(urlString)
+    }
+
+    /// Start builder from a `URL` object.
+    static func url(_ url: URL) -> Builder {
+        Builder.url(url)
     }
 }
 
 private extension Encodable {
-    func toDictionary() -> [String: Any]? {
-        do {
-            let data = try JSONEncoder().encode(self)
-            let jsonData = try JSONSerialization.jsonObject(with: data)
-            return jsonData as? [String: Any]
-        } catch {
-            return nil
+    func toQueryDictionary() throws -> [String: Any] {
+        let data = try JSONEncoder().encode(self)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = jsonObject as? [String: Any] else {
+            throw DENNetworkError.urlGeneration
         }
+        return dictionary
     }
 }

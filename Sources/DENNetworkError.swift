@@ -7,7 +7,7 @@ import Foundation
 /// if a request should be retried, and `hasStatusCode(_:)` to match specific HTTP codes.
 public enum DENNetworkError: Error, Equatable, Sendable {
     /// Unhandled HTTP status code with optional response body for inspection.
-    case error(statusCode: Int, data: Data?)
+    case httpError(statusCode: Int, data: Data?)
     case notConnected
     case cancelled
     /// Wraps non-network errors. Stores `localizedDescription` (not the original `Error`)
@@ -37,8 +37,8 @@ public enum DENNetworkError: Error, Equatable, Sendable {
 extension DENNetworkError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case let .error(statusCode, _):
-            return "Server error (\(statusCode))."
+        case let .httpError(statusCode, _):
+            return "HTTP error (\(statusCode))."
         case .notConnected:
             return "No internet connection."
         case .cancelled:
@@ -72,23 +72,46 @@ extension DENNetworkError: LocalizedError {
 }
 
 public extension DENNetworkError {
-    var isNotFoundError: Bool {
+
+    /// The HTTP status code associated with this error, if any.
+    var statusCode: Int? {
         switch self {
-        case .notFound:
-            return true
-        default:
-            return hasStatusCode(404)
+        case .httpError(let code, _): return code
+        case .serverError(let code): return code
+        case .unauthorized: return 401
+        case .forbidden: return 403
+        case .notFound: return 404
+        case .badRequest: return 400
+        case .timeout: return 408
+        case .tooManyRequests: return 429
+        default: return nil
         }
+    }
+
+    /// Whether this error represents a client error (4xx).
+    var isClientError: Bool {
+        guard let code = statusCode else { return false }
+        return (400...499).contains(code)
+    }
+
+    /// Whether this error represents a server error (5xx).
+    var isServerError: Bool {
+        guard let code = statusCode else { return false }
+        return (500...599).contains(code)
+    }
+
+    var isNotFoundError: Bool {
+        hasStatusCode(404)
     }
 
     /// Whether this error is transient and the request can be retried.
     ///
-    /// Retryable: `timeout`, `serverError`, `error`, `generic`, `invalidResponseWith`, `unknown`.
+    /// Retryable: `timeout`, `serverError`, `httpError`, `generic`, `invalidResponseWith`, `unknown`.
     /// Not retryable: `cancelled`, `notConnected`, `decodingError`, `unauthorized`, `forbidden`,
     /// `notFound`, `badRequest`, `urlGeneration`, `tooManyRequests`.
     var isRetryable: Bool {
         switch self {
-        case .timeout, .serverError, .error, .generic, .invalidResponseWith, .unknown:
+        case .timeout, .serverError, .httpError, .generic, .invalidResponseWith, .unknown:
             return true
         case .cancelled, .notConnected, .decodingError, .unauthorized, .forbidden,
              .notFound, .badRequest, .urlGeneration, .tooManyRequests:
@@ -98,23 +121,6 @@ public extension DENNetworkError {
 
     /// Checks if this error corresponds to the given HTTP status code.
     func hasStatusCode(_ codeError: Int) -> Bool {
-        switch self {
-        case let .error(code, _):
-            return code == codeError
-        case .serverError(let code):
-            return code == codeError
-        case .unauthorized:
-            return codeError == 401
-        case .forbidden:
-            return codeError == 403
-        case .notFound:
-            return codeError == 404
-        case .badRequest:
-            return codeError == 400
-        case .tooManyRequests:
-            return codeError == 429
-        default:
-            return false
-        }
+        statusCode == codeError
     }
 }
