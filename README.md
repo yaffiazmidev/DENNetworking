@@ -1,21 +1,23 @@
 # DENNetworking
 
-Lightweight, protocol-based networking layer for iOS built on Swift Concurrency. Zero external dependencies — pure `Foundation`.
+Lightweight, protocol-based networking layer for Apple platforms built on Swift Concurrency. Zero external dependencies — pure `Foundation`. Swift 6 ready.
 
 ## Table of Contents
 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Architecture](#architecture)
-- [Quick Start](#quick-start)
-  - [Basic GET Request](#1-basic-get-request)
-  - [POST with JSON Body](#2-post-with-json-body)
-  - [Relative Path (with Base URL Decorator)](#3-relative-path-with-base-url-decorator)
+- [Quick Start — Full CRUD](#quick-start--full-crud)
+- [Builder Convenience](#builder-convenience)
 - [Configuration](#configuration)
 - [Logger](#logger)
 - [Error Handling](#error-handling)
 - [Decorator Pattern](#decorator-pattern)
+- [Built-in Decorators](#built-in-decorators)
+- [Multipart Form Data](#multipart-form-data)
 - [Custom Response Decoder](#custom-response-decoder)
+- [Swift 6 & Default Actor Isolation](#swift-6--default-actor-isolation)
+- [Example App](#example-app)
 - [Module Structure](#module-structure)
 - [License](#license)
 
@@ -24,8 +26,11 @@ Lightweight, protocol-based networking layer for iOS built on Swift Concurrency.
 | Requirement | Minimum |
 |-------------|---------|
 | iOS | 13.0+ |
-| Swift | 5.5+ |
-| Xcode | 14.0+ |
+| macOS | 10.15+ |
+| tvOS | 13.0+ |
+| watchOS | 6.0+ |
+| Swift | 5.10+ |
+| Xcode | 15.0+ |
 
 ## Installation
 
@@ -56,7 +61,7 @@ Copy the `Sources/` directory into your project.
 ┌─────────────────────────────────────────────────────┐
 │              DENNetworkHTTPClient                    │  Protocol (transport layer)
 │  ┌───────────────────────────────────────────────┐  │
-│  │  URLSession ─► TokenRefresh ─► Auth ─► Retry  │  │  Decorators (compose freely)
+│  │  URLSession ─► Auth ─► Retry                  │  │  Decorators (compose freely)
 │  └───────────────────────────────────────────────┘  │
 └──────────────────────┬──────────────────────────────┘
                        │
@@ -80,28 +85,18 @@ public protocol DENNetworkHTTPClient: Sendable {
 
 Any class conforming to this protocol can be used as the HTTP transport. Decorators wrap one another to add behavior (auth, retry, token refresh) without modifying existing code.
 
-## Quick Start
+## Quick Start — Full CRUD
 
-### 1. Basic GET Request
+### 1. Setup
 
 ```swift
 import DENNetworking
 
-// 1. Create client & service
 let client = DENNetworkURLSessionHTTPClient()
 let service = DENNetworkService(client: client)
-
-// 2. Build request
-let request = try URLRequest
-    .url("https://api.example.com/v1/users")
-    .method(.GET)
-    .build()
-
-// 3. Execute & decode
-let users: [User] = try await service.execute(request)
 ```
 
-### 2. POST with JSON Body
+### 2. Create (POST)
 
 ```swift
 struct CreateUserRequest: Encodable {
@@ -109,21 +104,56 @@ struct CreateUserRequest: Encodable {
     let email: String
 }
 
-let body = CreateUserRequest(name: "Den", email: "den@example.com")
-
 let request = try URLRequest
     .url("https://api.example.com/v1/users")
     .method(.POST)
-    .headers(key: "Content-Type", value: "application/json")
-    .body(data: body)
+    .body(CreateUserRequest(name: "Den", email: "den@example.com"))
     .build()
 
 let user: User = try await service.execute(request)
 ```
 
-### 3. Relative Path (with Base URL Decorator)
+> `.body()` automatically sets `Content-Type: application/json`.
 
-When building requests with `URLRequest.path`, you need a base-URL decorator to prepend the host and optionally inject common headers or query parameters. This decorator is external and not included in this package.
+### 3. Read (GET)
+
+```swift
+let request = try URLRequest
+    .url("https://api.example.com/v1/users")
+    .method(.GET)
+    .queries([URLQueryItem(name: "page", value: "1")])
+    .build()
+
+let users: [User] = try await service.execute(request)
+```
+
+### 4. Update (PUT)
+
+```swift
+let request = try URLRequest
+    .url("https://api.example.com/v1/users/123")
+    .method(.PUT)
+    .body(UpdateUserRequest(name: "Den Azmi"))
+    .build()
+
+let updated: User = try await service.execute(request)
+```
+
+### 5. Delete (DELETE)
+
+```swift
+let request = try URLRequest
+    .url("https://api.example.com/v1/users/123")
+    .method(.DELETE)
+    .build()
+
+// Void response — validates status code only, no decoding
+try await service.execute(request)
+```
+
+### 6. Relative Path (with Authenticated Decorator)
+
+Use `URLRequest.path()` with `AuthenticatedHTTPClientDecorator` for relative URLs:
 
 ```swift
 enum UserEndpoint {
@@ -138,22 +168,57 @@ enum UserEndpoint {
         try URLRequest
             .path("v1/users")
             .method(.POST)
-            .headers(key: "Content-Type", value: "application/json")
-            .body(data: body)
+            .body(body)
             .build()
     }
 }
 
 let http = DENNetworkURLSessionHTTPClient()
-let authed = MyAuthenticatedHTTPClientDecorator(
+let auth = AuthenticatedHTTPClientDecorator(
     decoratee: http,
     baseURL: URL(string: "https://api.example.com")!,
-    headers: ["Authorization": "Bearer \(token)"],
-    queryParameters: ["api_key": "..."]
+    tokenProvider: myTokenProvider,
+    commonHeaders: ["Accept": "application/json"]
 )
-let service = DENNetworkService(client: authed)
+let service = DENNetworkService(client: auth)
 
-let users: [User] = try await service.execute(UserEndpoint.getAll(PaginationRequest(page: 1, limit: 20)))
+let users: [User] = try await service.execute(
+    UserEndpoint.getAll(PaginationRequest(page: 1, limit: 20))
+)
+```
+
+## Builder Convenience
+
+Skip `.build()` by passing the builder directly to `execute()`:
+
+```swift
+// With .build()
+let request = try URLRequest.url("https://api.example.com/users").method(.GET).build()
+let users: [User] = try await service.execute(request)
+
+// Without .build() — pass builder directly
+let users: [User] = try await service.execute(
+    .url("https://api.example.com/users").method(.GET)
+)
+```
+
+### Builder API Reference
+
+```swift
+let request = try URLRequest
+    .url("https://api.example.com/v1/users")   // or .path("v1/users") or .url(someURL)
+    .method(.POST)                              // GET, POST, PUT, PATCH, DELETE
+    .headers(key: "X-Custom", value: "value")   // single header
+    .headers(["Accept": "application/json",     // bulk headers
+              "X-Platform": "iOS"])
+    .body(encodablePayload)                     // auto Content-Type: application/json
+    .body(payload, encoder: customEncoder)       // custom JSONEncoder
+    .bodyRaw(rawData)                           // raw Data body
+    .multipart(multipartFormData)               // multipart/form-data
+    .queries([URLQueryItem(name: "page", value: "1")])
+    .queriesEncodable(encodableParams)          // Encodable → query params
+    .timeout(30.0)                              // request timeout in seconds
+    .build()
 ```
 
 ## Configuration
@@ -182,19 +247,7 @@ encoder.keyEncodingStrategy = .convertToSnakeCase
 let request = try URLRequest
     .url("https://api.example.com/v1/users")
     .method(.POST)
-    .body(data: payload, encoder: encoder)
-    .build()
-```
-
-### Raw Data Body (Protobuf, Image, Form-Data)
-
-```swift
-let imageData: Data = ...
-let request = try URLRequest
-    .url("https://api.example.com/v1/upload")
-    .method(.POST)
-    .headers(key: "Content-Type", value: "image/jpeg")
-    .bodyRaw(imageData)
+    .body(payload, encoder: encoder)
     .build()
 ```
 
@@ -212,10 +265,21 @@ let data: Data = try await service.execute(request)
 
 ## Logger
 
-All logging is gated behind `#if DEBUG` — zero output in release builds.
+Logging is **opt-in** — disabled by default (`isEnabled = false`) to ensure zero output in production. Enable it in your app's entry point with a `#if DEBUG` gate:
 
 ```swift
-// Toggle logging on/off
+// In your App init or AppDelegate
+#if DEBUG
+DENNetworkLogger.isEnabled = true
+#endif
+```
+
+> **Why opt-in?** The `#if DEBUG` check must be in **your app module** (not in the library) to guarantee the compiler flag is evaluated in your build context. This ensures logging is truly disabled in release builds regardless of how the library is compiled.
+
+### Configuration
+
+```swift
+#if DEBUG
 DENNetworkLogger.isEnabled = true
 
 // Show full response (no truncation)
@@ -225,9 +289,7 @@ DENNetworkLogger.maxRawResponseLength = nil
 // Custom limits
 DENNetworkLogger.maxResponseLines = 100
 DENNetworkLogger.maxRawResponseLength = 2000
-
-// Disable logging entirely
-DENNetworkLogger.isEnabled = false
+#endif
 ```
 
 ## Error Handling
@@ -243,8 +305,9 @@ All errors are typed as `DENNetworkError`, which conforms to `Error`, `Equatable
 | 401 | `.unauthorized` |
 | 403 | `.forbidden` |
 | 404 | `.notFound` |
+| 408 | `.timeout` |
 | 429 | `.tooManyRequests` |
-| Other 4xx | `.error(statusCode:data:)` |
+| Other 4xx | `.httpError(statusCode:data:)` |
 | 500-599 | `.serverError(statusCode:)` |
 
 ### Transport Errors
@@ -276,43 +339,22 @@ do {
 }
 ```
 
-### Retry Logic
-
-Use `isRetryable` to determine if a failed request should be retried:
+### Error Utilities
 
 ```swift
-if let networkError = error as? DENNetworkError, networkError.isRetryable {
-    // safe to retry: timeout, serverError, generic, etc.
-}
-```
-
-### Status Code Checking
-
-```swift
-if let networkError = error as? DENNetworkError {
-    networkError.hasStatusCode(409)  // check specific code
-    networkError.isNotFoundError     // shorthand for 404
+if let error = error as? DENNetworkError {
+    error.statusCode          // Int? — the HTTP status code
+    error.isRetryable         // safe to retry: timeout, serverError, etc.
+    error.isClientError       // 4xx error
+    error.isServerError       // 5xx error
+    error.isNotFoundError     // 404
+    error.hasStatusCode(409)  // check specific code
 }
 ```
 
 ## Decorator Pattern
 
 The protocol-based design supports wrapping clients with decorators for cross-cutting concerns. Each decorator conforms to `DENNetworkHTTPClient` and wraps another.
-
-### Composition Example (external decorator)
-
-```swift
-let urlSession = DENNetworkURLSessionHTTPClient()
-
-let authenticated = MyAuthenticatedHTTPClientDecorator(
-    decoratee: urlSession,
-    baseURL: URL(string: "https://api.example.com")!,
-    headers: ["Authorization": "Bearer \(token)"],
-    queryParameters: ["api_key": "..."]
-)
-
-let service = DENNetworkService(client: authenticated)
-```
 
 ### Custom Decorator: Alamofire
 
@@ -349,27 +391,143 @@ public final class AlamofireHTTPClient: DENNetworkHTTPClient, @unchecked Sendabl
 let service = DENNetworkService(client: AlamofireHTTPClient())
 ```
 
-### Custom Decorator: Token Refresh
+## Built-in Decorators
+
+DENNetworking ships with two production-ready decorators. Compose them freely with each other and your own custom decorators.
+
+### Retry Decorator
+
+Automatically retries failed requests with configurable backoff strategies. Only retries errors where `isRetryable` is `true` (timeout, server errors, etc.). Non-retryable errors (unauthorized, not found, cancelled) are thrown immediately.
 
 ```swift
-public final class TokenRefreshDecorator: DENNetworkHTTPClient {
-    private let decoratee: DENNetworkHTTPClient
-    private let tokenStore: TokenStore
-    private let refresher: TokenRefresher
+let client = DENNetworkURLSessionHTTPClient()
+let retry = RetryHTTPClientDecorator(
+    decoratee: client,
+    maxRetries: 3,
+    baseDelay: 1.0,
+    strategy: .exponential(multiplier: 2.0)  // 1s → 2s → 4s
+)
+let service = DENNetworkService(client: retry)
+```
 
-    public func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        var authedRequest = attachToken(to: request)
-        let (data, response) = try await decoratee.load(authedRequest)
+**Backoff strategies:**
 
-        guard response.statusCode == 401 else { return (data, response) }
+| Strategy | Behavior |
+|----------|----------|
+| `.constant` | Same delay every retry |
+| `.exponential(multiplier:)` | Delay multiplies each attempt (default) |
+| `.exponentialWithJitter(multiplier:maxJitter:)` | Exponential + random jitter to prevent thundering herd |
 
-        // Refresh and retry once
-        try await refresher.refresh()
-        authedRequest = attachToken(to: request)
-        return try await decoratee.load(authedRequest)
+**Configuration:**
+
+```swift
+// Conservative retry for critical operations
+let retry = RetryHTTPClientDecorator(
+    decoratee: client,
+    maxRetries: 5,
+    baseDelay: 2.0,
+    maxDelay: 60.0,
+    strategy: .exponentialWithJitter(multiplier: 2.0, maxJitter: 1.0)
+)
+```
+
+### Authenticated Decorator
+
+Injects base URL, auth tokens, common headers, and query parameters. Optionally refreshes tokens on 401 responses.
+
+```swift
+let client = DENNetworkURLSessionHTTPClient()
+let auth = AuthenticatedHTTPClientDecorator(
+    decoratee: client,
+    baseURL: URL(string: "https://api.example.com")!,
+    tokenProvider: myTokenProvider,
+    commonHeaders: ["Accept": "application/json"],
+    commonQueryParameters: ["api_version": "2"]
+)
+let service = DENNetworkService(client: auth)
+```
+
+**Token Provider:** Implement the `TokenProvider` protocol to integrate with your auth system:
+
+```swift
+final class MyTokenProvider: TokenProvider {
+    func currentToken() async throws -> String {
+        return keychain.get("access_token") ?? ""
+    }
+
+    func refreshToken() async throws -> String {
+        let newToken = try await authService.refresh()
+        keychain.set(newToken, forKey: "access_token")
+        return newToken
     }
 }
 ```
+
+**Composing decorators:** Stack retry and auth together:
+
+```swift
+let urlSession = DENNetworkURLSessionHTTPClient()
+let auth = AuthenticatedHTTPClientDecorator(
+    decoratee: urlSession,
+    baseURL: URL(string: "https://api.example.com")!,
+    tokenProvider: myTokenProvider
+)
+let retry = RetryHTTPClientDecorator(decoratee: auth, maxRetries: 3)
+let service = DENNetworkService(client: retry)
+
+// Relative paths work automatically:
+let users: [User] = try await service.execute(
+    .path("v1/users").method(.GET)
+)
+```
+
+## Multipart Form Data
+
+Upload files and form fields using `MultipartFormData`:
+
+```swift
+var multipart = MultipartFormData()
+multipart.addField(name: "title", value: "My Photo")
+multipart.addFile(
+    name: "image",
+    filename: "photo.jpg",
+    mimeType: MultipartFormData.MIMEType.jpeg,
+    data: imageData
+)
+
+let request = try URLRequest
+    .url("https://api.example.com/v1/upload")
+    .method(.POST)
+    .multipart(multipart)
+    .build()
+
+try await service.execute(request)
+```
+
+**Multiple files:**
+
+```swift
+var multipart = MultipartFormData()
+multipart.addField(name: "album", value: "Vacation")
+multipart.addFile(name: "photos[]", filename: "beach.jpg",
+                  mimeType: MultipartFormData.MIMEType.jpeg, data: beachData)
+multipart.addFile(name: "photos[]", filename: "sunset.png",
+                  mimeType: MultipartFormData.MIMEType.png, data: sunsetData)
+multipart.addFile(name: "document", filename: "itinerary.pdf",
+                  mimeType: MultipartFormData.MIMEType.pdf, data: pdfData)
+```
+
+**Common MIME types** available via `MultipartFormData.MIMEType`:
+
+| Constant | Value |
+|----------|-------|
+| `.jpeg` | `image/jpeg` |
+| `.png` | `image/png` |
+| `.gif` | `image/gif` |
+| `.pdf` | `application/pdf` |
+| `.json` | `application/json` |
+| `.plainText` | `text/plain` |
+| `.octetStream` | `application/octet-stream` |
 
 ## Custom Response Decoder
 
@@ -386,6 +544,56 @@ public class XMLResponseDecoder: ResponseDecoder {
 let service = DENNetworkService(client: client, decoder: XMLResponseDecoder())
 ```
 
+## Swift 6 & Default Actor Isolation
+
+DENNetworking is built with **Swift 6 language mode** and full `Sendable` conformance.
+
+### Xcode 26+ (Default `@MainActor` Isolation)
+
+Starting from Xcode 26, new projects use `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` by default. This means **all types are implicitly `@MainActor`**, which can cause compile errors when using DENNetworking:
+
+```
+Main actor-isolated conformance of 'MyModel' to 'Decodable'
+cannot satisfy conformance requirement for a 'Sendable' type parameter 'T'
+```
+
+**Option 1: Change default isolation to `nonisolated` (recommended)**
+
+In your Xcode project **Build Settings**, set:
+
+```
+SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated
+```
+
+Then explicitly mark only UI classes with `@MainActor`:
+
+```swift
+@MainActor
+final class MyViewModel: ObservableObject { ... }
+```
+
+**Option 2: Keep `MainActor` default, mark data types `nonisolated`**
+
+If you prefer keeping the `MainActor` default, annotate your models and networking types:
+
+```swift
+nonisolated struct User: Decodable, Sendable { ... }
+nonisolated final class UserRepository: Sendable { ... }
+nonisolated enum UserEndpoint { ... }
+```
+
+> **Why?** `DENNetworkService.execute()` requires `T: Decodable & Sendable`. When a type's `Decodable` conformance is isolated to `@MainActor`, it cannot satisfy this requirement from a non-MainActor async context.
+
+## Example App
+
+The `Example/` directory contains a full SwiftUI TMDB Movie Browser demonstrating all CRUD operations with DENNetworking.
+
+```bash
+open Example/Example.xcodeproj
+```
+
+See the [Example README](Example/README.md) for architecture details, project structure, and setup instructions.
+
 ## Module Structure
 
 ```
@@ -394,11 +602,15 @@ Sources/
 ├── DENNetworkURLSessionHTTPClient.swift   — URLSession implementation
 ├── DENNetworkService.swift                — Status code mapping + decoding
 ├── DENNetworkError.swift                  — Typed error enum
+├── Decorators/
+│   ├── RetryHTTPClientDecorator.swift     — Automatic retry with backoff
+│   └── AuthenticatedHTTPClientDecorator.swift — Auth + base URL decorator
 └── Helper/
-    ├── DENNetworkLogger.swift             — Debug-only request/response logger
+    ├── DENNetworkLogger.swift             — Opt-in request/response logger
+    ├── MultipartFormData.swift            — Multipart form data builder
     └── URLRequest+Builder.swift           — Fluent request builder
 ```
 
 ## License
 
-Licensed under the MIT License. See the LICENSE file for details.
+Licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
