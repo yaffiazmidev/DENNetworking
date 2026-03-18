@@ -1,12 +1,14 @@
-// swift-tools-version: 5.10
-// The swift-tools-version declares the minimum version of Swift required to build this package.
+// swift-tools-version: 6.0
 
 import PackageDescription
 
 let package = Package(
     name: "DENNetworking",
     platforms: [
-        .iOS(.v13)
+        .iOS(.v13),
+        .macOS(.v10_15),
+        .tvOS(.v13),
+        .watchOS(.v6)
     ],
     products: [
         .library(
@@ -16,8 +18,15 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "DENNetworking"
+            name: "DENNetworking",
+            path: "Sources"
         ),
-
+        .testTarget(
+            name: "DENNetworkingTests",
+            dependencies: ["DENNetworking"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
     ]
 )

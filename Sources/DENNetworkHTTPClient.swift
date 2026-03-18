@@ -11,14 +11,14 @@ import Foundation
 /// ```
 ///
 /// Built-in conformers:
-/// - `DENNetworkURLSessionHTTPClient` — URLSession-based (this module)
-/// - `AuthenticatedHTTPClientDecorator` — injects base URL, headers, and query params (DENCryptoCore)
-/// - `RetryHTTPClientDecorator` — automatic retry on retryable errors (DENCryptoCore)
+/// - `DENNetworkURLSessionHTTPClient` — URLSession-based
+/// - `AuthenticatedHTTPClientDecorator` — injects base URL, headers, query params, and auth tokens
+/// - `RetryHTTPClientDecorator` — automatic retry with exponential backoff
 public protocol DENNetworkHTTPClient: Sendable {
     /// Executes an HTTP request and returns raw response data.
     ///
     /// - Note: This method does **not** validate status codes. It returns any successful HTTP response
-    ///   (including 4xx/5xx). Status code handling is done by `DENNetworkService.decode()`.
+    ///   (including 4xx/5xx). Status code handling is done by `DENNetworkService.validateStatusCode()`.
     /// - Throws: `DENNetworkError` for transport-level failures (no connection, timeout, cancelled).
     func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
 }
