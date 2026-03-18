@@ -54,12 +54,12 @@ Copy the `Sources/` directory into your project.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  URLRequest.Builder                  │  Build requests
+│                  URLRequest.Builder                 │  Build requests
 └──────────────────────┬──────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│              DENNetworkHTTPClient                    │  Protocol (transport layer)
+│              DENNetworkHTTPClient                   │  Protocol (transport layer)
 │  ┌───────────────────────────────────────────────┐  │
 │  │  URLSession ─► Auth ─► Retry                  │  │  Decorators (compose freely)
 │  └───────────────────────────────────────────────┘  │
@@ -67,8 +67,8 @@ Copy the `Sources/` directory into your project.
                        │
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│              DENNetworkService                       │  Status code mapping + decoding
-│              ResponseDecoder                         │  JSON / Raw / Custom
+│              DENNetworkService                      │  Status code mapping + decoding
+│              ResponseDecoder                        │  JSON / Raw / Custom
 └──────────────────────┬──────────────────────────────┘
                        │
                        ▼
