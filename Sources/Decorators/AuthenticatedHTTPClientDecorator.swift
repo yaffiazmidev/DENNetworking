@@ -24,20 +24,57 @@ public protocol TokenProvider: Sendable {
     func refreshToken() async throws -> String
 }
 
+/// Configuration for token-based authentication.
+///
+/// ```swift
+/// let tokenConfig = TokenConfig(
+///     provider: myTokenProvider,
+///     headerKey: "Authorization",
+///     prefix: "Bearer "
+/// )
+/// ```
+public struct TokenConfig: Sendable {
+    /// Provides auth tokens and handles refresh.
+    public let provider: TokenProvider
+    /// Header key for the token (default: `"Authorization"`).
+    public let headerKey: String
+    /// Prefix before the token value (default: `"Bearer "`).
+    public let prefix: String
+    /// Whether to refresh token and retry on 401 (default: `true`).
+    public let refreshOnUnauthorized: Bool
+
+    public init(
+        provider: TokenProvider,
+        headerKey: String = "Authorization",
+        prefix: String = "Bearer ",
+        refreshOnUnauthorized: Bool = true
+    ) {
+        self.provider = provider
+        self.headerKey = headerKey
+        self.prefix = prefix
+        self.refreshOnUnauthorized = refreshOnUnauthorized
+    }
+}
+
 /// Decorator that injects base URL, authentication headers, and common query parameters.
 ///
 /// Optionally handles 401 responses by refreshing the token and retrying once.
 /// When multiple concurrent requests receive 401, only one token refresh is performed —
 /// all other requests wait for the same refresh result.
 ///
-/// Usage:
+/// Usage with config:
 /// ```swift
+/// let config = DENApiNetworkConfig(
+///     baseURL: URL(string: "https://api.example.com")!,
+///     headers: ["Content-Type": "application/json"],
+///     queryParameters: ["api_key": "your_key"]
+/// )
+/// let tokenConfig = TokenConfig(provider: myTokenProvider)
 /// let client = DENNetworkURLSessionHTTPClient()
 /// let auth = AuthenticatedHTTPClientDecorator(
 ///     decoratee: client,
-///     baseURL: URL(string: "https://api.example.com")!,
-///     tokenProvider: myTokenProvider,
-///     commonHeaders: ["Accept": "application/json"]
+///     config: config,
+///     tokenConfig: tokenConfig
 /// )
 /// let service = DENNetworkService(client: auth)
 /// ```
@@ -55,8 +92,8 @@ public final class AuthenticatedHTTPClientDecorator: DENNetworkHTTPClient, Senda
     private let tokenProvider: TokenProvider?
     private let tokenHeaderKey: String
     private let tokenPrefix: String
-    private let commonHeaders: [String: String]
-    private let commonQueryParameters: [String: String]
+    private let headers: [String: String]
+    private let queryParameters: [String: String]
     private let refreshOnUnauthorized: Bool
     private let refreshCoordinator = TokenRefreshCoordinator()
 
@@ -86,9 +123,30 @@ public final class AuthenticatedHTTPClientDecorator: DENNetworkHTTPClient, Senda
         self.tokenProvider = tokenProvider
         self.tokenHeaderKey = tokenHeaderKey
         self.tokenPrefix = tokenPrefix
-        self.commonHeaders = commonHeaders
-        self.commonQueryParameters = commonQueryParameters
+        self.headers = commonHeaders
+        self.queryParameters = commonQueryParameters
         self.refreshOnUnauthorized = refreshOnUnauthorized
+    }
+
+    /// Creates an authenticated HTTP client decorator using a network config.
+    ///
+    /// - Parameters:
+    ///   - decoratee: The underlying HTTP client to wrap.
+    ///   - config: Network configuration providing base URL, headers, and query parameters.
+    ///   - tokenConfig: Token authentication configuration (optional).
+    public init(
+        decoratee: DENNetworkHTTPClient,
+        config: DENNetworkConfigurable,
+        tokenConfig: TokenConfig? = nil
+    ) {
+        self.decoratee = decoratee
+        self.baseURL = config.baseURL
+        self.tokenProvider = tokenConfig?.provider
+        self.tokenHeaderKey = tokenConfig?.headerKey ?? "Authorization"
+        self.tokenPrefix = tokenConfig?.prefix ?? "Bearer "
+        self.headers = config.headers
+        self.queryParameters = config.queryParameters
+        self.refreshOnUnauthorized = tokenConfig?.refreshOnUnauthorized ?? true
     }
 
     public func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -146,8 +204,17 @@ public final class AuthenticatedHTTPClientDecorator: DENNetworkHTTPClient, Senda
             let urlString = url.absoluteString
             let isRelativePath = !urlString.contains("://")
             if isRelativePath {
-                let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
-                mutableRequest.url = baseURL.appendingPathComponent(path)
+                guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+                      let relativeComponents = URLComponents(string: urlString) else {
+                    return mutableRequest
+                }
+
+                let basePath = components.path.hasSuffix("/") ? components.path : components.path + "/"
+                let relativePath = relativeComponents.path.hasPrefix("/") ? String(relativeComponents.path.dropFirst()) : relativeComponents.path
+                components.path = basePath + relativePath
+                components.queryItems = relativeComponents.queryItems
+
+                mutableRequest.url = components.url
             }
         }
 
@@ -155,7 +222,7 @@ public final class AuthenticatedHTTPClientDecorator: DENNetworkHTTPClient, Senda
     }
 
     private func applyCommonHeaders(to request: inout URLRequest) {
-        for (key, value) in commonHeaders {
+        for (key, value) in headers {
             if request.value(forHTTPHeaderField: key) == nil {
                 request.setValue(value, forHTTPHeaderField: key)
             }
@@ -163,14 +230,14 @@ public final class AuthenticatedHTTPClientDecorator: DENNetworkHTTPClient, Senda
     }
 
     private func applyCommonQueryParameters(to request: inout URLRequest) {
-        guard !commonQueryParameters.isEmpty,
+        guard !queryParameters.isEmpty,
               let url = request.url,
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return
         }
 
         var queryItems = components.queryItems ?? []
-        for (key, value) in commonQueryParameters {
+        for (key, value) in queryParameters {
             if !queryItems.contains(where: { $0.name == key }) {
                 queryItems.append(URLQueryItem(name: key, value: value))
             }
